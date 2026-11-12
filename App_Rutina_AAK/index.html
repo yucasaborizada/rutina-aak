@@ -3242,7 +3242,7 @@ function pintarFotos(pid){
     m.querySelector("button").onclick = ()=>{ d.fotos.splice(idx,1); pintarFotos(pid); actualizarPunto(pid); guardar(); };
     box.appendChild(m);
   });
-  if(d.fotos.length<6){
+  if(d.fotos.length<10){
     const subir = async e=>{
       const file = e.target.files[0]; e.target.value=""; if(!file) return;
       try{ d.fotos.push(await reducirFoto(file)); }catch(err){ avisar("No se pudo leer la foto. Intente otra vez."); }
