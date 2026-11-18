@@ -2934,6 +2934,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <script>
 // Puntos del recorrido. Sin min/max = se anota pero no se valida (rango por confirmar)
 const PLANTA = "AAK Colombia · Planta Villavicencio";
+const ORDEN = ()=>({ nombre:"Orden y limpieza", items:[
+  { id:"limpio", tipo:"sino", nombre:"¿El área se encuentra limpia?" },
+  { id:"organizado", tipo:"sino", nombre:"¿El área está organizada?" },
+  { id:"foto_novedad", tipo:"foto", nombre:"Foto de lo que está sucio o desorganizado", mostrarSi:d=>d.valores.limpio==="no"||d.valores.organizado==="no" },
+  { id:"foto_general", tipo:"foto", nombre:"Foto general del cuarto" }
+]});
 const PUNTOS = [
   { id:"subestacion440", nombre:"Subestación 440 · Tablero general de distribución",
     desc:"Lectura del medidor Schneider PM2200 del tablero general: voltaje entre fases U12, U23 y U31.",
@@ -2972,7 +2978,9 @@ const PUNTOS = [
       { id:"vc_l12", tipo:"num", nombre:"Alimentación L1-L2", unidad:"V", min:418, max:462 },
       { id:"vc_l23", tipo:"num", nombre:"Alimentación L2-L3", unidad:"V", min:418, max:462 },
       { id:"vc_l31", tipo:"num", nombre:"Alimentación L3-L1", unidad:"V", min:418, max:462 }
-    ]},
+    ],
+    gruposAlFinal:true,
+    grupos:[ ORDEN() ]},
   { id:"calderas_alta", nombre:"Caldera de alta presión",
     desc:"Presión y temperatura de salida en la pantalla de control de la caldera.",
     foto:"Pantalla de la caldera",
@@ -3038,7 +3046,8 @@ const PUNTOS = [
     grupos:[
       { nombre:"Tanque de alta de amoníaco", items:[
         { id:"p_alta", tipo:"num", nombre:"Presión (manómetro)", unidad:"psi", porConfirmar:true },
-        { id:"nivel_nh3", tipo:"num", nombre:"Nivel (visor)", unidad:"cm", porConfirmar:true } ]}
+        { id:"nivel_nh3", tipo:"num", nombre:"Nivel (visor)", unidad:"cm", porConfirmar:true } ]},
+      ORDEN()
     ]}
 ];
 PUNTOS.forEach(p=>{ p.fotoObligatoria = true; });
@@ -3052,7 +3061,7 @@ let reporte = null;
 
 function nuevoRegistro(){
   const r = { inicio:new Date().toISOString(), turno:"", puntos:{} };
-  PUNTOS.forEach(p=>{ r.puntos[p.id] = { valores:{}, unidades:{}, estado:"", obs:"", fotos:[] }; });
+  PUNTOS.forEach(p=>{ r.puntos[p.id] = { valores:{}, unidades:{}, estado:"", obs:"", fotos:[], extra:{} }; });
   return r;
 }
 function plural(n){ n=n.toLowerCase(); return /[aeiou]$/.test(n) ? n+"s" : n+"es"; }
@@ -3062,7 +3071,7 @@ function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&l
 // Lista de lecturas que aplican a un punto según los equipos en operación
 function lecturas(p){
   const d = datos.puntos[p.id], out = [];
-  const grupos = ()=> (p.grupos||[]).forEach(g=> g.items.forEach(it=> out.push({ it, key:it.id, grupo:g.nombre, etiqueta:`${g.nombre} · ${it.nombre}` })));
+  const grupos = ()=> (p.grupos||[]).forEach(g=> g.items.forEach(it=>{ if(it.mostrarSi && !it.mostrarSi(d)) return; out.push({ it, key:it.id, grupo:g.nombre, etiqueta:`${g.nombre} · ${it.nombre}` }); }));
   if(!p.gruposAlFinal) grupos();
   if(p.unidades){
     for(let n=1;n<=p.unidades.cantidad;n++){
@@ -3104,7 +3113,10 @@ function escala(it){
 function faltantes(p){
   const d = datos.puntos[p.id], f = [];
   if(p.unidades && unidadesActivas(p).length===0) f.push(`elegir ${plural(p.unidades.nombre)} en operación`);
-  lecturas(p).forEach(l=>{ if(vacio(d.valores[l.key])) f.push(l.etiqueta); });
+  lecturas(p).forEach(l=>{
+    if(l.it.tipo==="foto"){ if(!(d.extra[l.key]||[]).length) f.push(l.it.nombre.toLowerCase()); }
+    else if(vacio(d.valores[l.key])) f.push(l.etiqueta);
+  });
   if(p.fotoObligatoria && d.fotos.length===0) f.push("foto");
   if(!d.estado) f.push("estado");
   if(d.estado==="mal" && !d.obs.trim()) f.push("observación de la novedad");
@@ -3112,7 +3124,7 @@ function faltantes(p){
 }
 function tieneAlertas(p){
   const d = datos.puntos[p.id];
-  return lecturas(p).some(l=> l.it.tipo==="num" ? fueraDeRango(l.it,d.valores[l.key]) : d.valores[l.key]==="no");
+  return lecturas(p).some(l=> l.it.tipo==="foto" ? false : l.it.tipo==="num" ? fueraDeRango(l.it,d.valores[l.key]) : d.valores[l.key]==="no");
 }
 function claseEstado(p){
   const d = datos.puntos[p.id], f = faltantes(p);
@@ -3141,6 +3153,10 @@ function pintarTodo(){
 
 function htmlLectura(p,l){
   const d = datos.puntos[p.id], v = d.valores[l.key] ?? "", it = l.it, idc = `in_${p.id}_${l.key}`;
+  if(it.tipo==="foto"){
+    return `<div class="lectura"><span class="nombre">${esc(it.nombre)} <span class="oblig">obligatoria</span></span>
+      <div class="fotos" id="fx_${p.id}_${l.key}"></div></div>`;
+  }
   if(it.tipo==="opc"){
     return `<div class="lectura"><span class="nombre">${esc(it.nombre)}</span>
       <div class="sino opc" data-p="${p.id}" data-k="${l.key}">
@@ -3234,26 +3250,37 @@ function actualizarAvance(){
 
 // Fotos
 function pintarFotos(pid){
-  const d = datos.puntos[pid], box = $("fotos_"+pid);
+  const d = datos.puntos[pid];
+  pintarGaleria(pid, null, $("fotos_"+pid));
+  lecturas(PUNTOS.find(x=>x.id===pid)).forEach(l=>{ if(l.it.tipo==="foto"){ const b=$(`fx_${pid}_${l.key}`); if(b) pintarGaleria(pid, l.key, b); } });
+}
+function listaFotos(pid, key){
+  const d = datos.puntos[pid];
+  if(!key) return d.fotos;
+  if(!d.extra[key]) d.extra[key] = [];
+  return d.extra[key];
+}
+function pintarGaleria(pid, key, box){
+  const lista = listaFotos(pid, key);
   box.innerHTML = "";
-  d.fotos.forEach((f,idx)=>{
+  lista.forEach((f,idx)=>{
     const m = document.createElement("div"); m.className="mini";
     m.innerHTML = `<img src="${f}" alt="Foto ${idx+1}"><button type="button" aria-label="Quitar foto ${idx+1}">×</button>`;
-    m.querySelector("button").onclick = ()=>{ d.fotos.splice(idx,1); pintarFotos(pid); actualizarPunto(pid); guardar(); };
+    m.querySelector("button").onclick = ()=>{ lista.splice(idx,1); pintarGaleria(pid,key,box); actualizarPunto(pid); guardar(); };
     box.appendChild(m);
   });
-  if(d.fotos.length<10){
+  if(lista.length < (key?4:10)){
     const subir = async e=>{
       const file = e.target.files[0]; e.target.value=""; if(!file) return;
-      try{ d.fotos.push(await reducirFoto(file)); }catch(err){ avisar("No se pudo leer la foto. Intente otra vez."); }
-      pintarFotos(pid); actualizarPunto(pid); guardar();
+      try{ lista.push(await reducirFoto(file)); }catch(err){ avisar("No se pudo leer la foto. Intente otra vez."); }
+      pintarGaleria(pid,key,box); actualizarPunto(pid); guardar();
     };
     const cam = document.createElement("label"); cam.className="tomar";
     cam.innerHTML = `${ICONO_CAM}Cámara<input type="file" accept="image/*" capture="environment" hidden>`;
     const inpCam = cam.querySelector("input"); inpCam.onchange = subir;
     cam.addEventListener("click", ev=>{
       if(ev.target===inpCam || !camaraDisponible()) return;
-      ev.preventDefault(); abrirCamara(pid, inpCam);
+      ev.preventDefault(); abrirCamara(pid, inpCam, key, box);
     });
     const gal = document.createElement("label"); gal.className="tomar sec";
     gal.innerHTML = `${ICONO_GAL}Galería<input type="file" accept="image/*" hidden>`;
@@ -3262,13 +3289,13 @@ function pintarFotos(pid){
   }
 }
 
-let camStream=null, camPid=null;
+let camStream=null, camPid=null, camKey=null, camBox=null;
 function camaraDisponible(){
   let enMarco = false; try{ enMarco = window.self !== window.top; }catch(e){ enMarco = true; }
   return !enMarco && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && window.isSecureContext !== false;
 }
-async function abrirCamara(pid, inpRespaldo){
-  camPid = pid;
+async function abrirCamara(pid, inpRespaldo, key, box){
+  camPid = pid; camKey = key||null; camBox = box||null;
   try{
     camStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},audio:false});
   }catch(e){
@@ -3289,9 +3316,10 @@ async function dispararCamara(){
   const v = $("camVideo"); if(!v.videoWidth) return;
   const c = document.createElement("canvas"); c.width=v.videoWidth; c.height=v.videoHeight;
   c.getContext("2d").drawImage(v,0,0);
-  const pid = camPid; cerrarCamara();
-  try{ datos.puntos[pid].fotos.push(await reducirImagen(c)); }catch(e){ avisar("No se pudo guardar la foto. Intente otra vez."); }
-  pintarFotos(pid); actualizarPunto(pid); guardar();
+  const pid = camPid, key = camKey, box = camBox; cerrarCamara();
+  try{ listaFotos(pid,key).push(await reducirImagen(c)); }catch(e){ avisar("No se pudo guardar la foto. Intente otra vez."); }
+  if(box) pintarGaleria(pid,key,box); else pintarFotos(pid);
+  actualizarPunto(pid); guardar();
 }
 function reducirImagen(src){
   const w = src.videoWidth||src.naturalWidth||src.width, h = src.videoHeight||src.naturalHeight||src.height;
@@ -3344,6 +3372,8 @@ document.addEventListener("click", e=>{
     datos.puntos[pid].valores[grupo.dataset.k] = b.dataset.v;
     grupo.querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed", x===b));
     if(b.dataset.v==="no" && !datos.puntos[pid].estado) aplicarEstado(pid,"mal");
+    const pp = PUNTOS.find(x=>x.id===pid);
+    if((pp.grupos||[]).some(g=>g.items.some(it=>it.mostrarSi))){ const yy = window.scrollY; pintarPunto(pid); window.scrollTo(0,yy); }
     actualizarPunto(pid); guardar();
   } else if(grupo.classList.contains("dos")){
     marcarEstado(pid,b.dataset.v);
@@ -3395,7 +3425,7 @@ function guardar(){
 function cargar(){
   try{
     const s = localStorage.getItem(LS_KEY);
-    if(s){ const r=JSON.parse(s); if(r&&r.puntos){ PUNTOS.forEach(p=>{ const x = r.puntos[p.id]; r.puntos[p.id] = Object.assign({valores:{},unidades:{},estado:"",obs:"",fotos:[]}, x||{}); }); datos=r; } }
+    if(s){ const r=JSON.parse(s); if(r&&r.puntos){ PUNTOS.forEach(p=>{ const x = r.puntos[p.id]; r.puntos[p.id] = Object.assign({valores:{},unidades:{},estado:"",obs:"",fotos:[],extra:{}}, x||{}); }); datos=r; } }
   }catch(e){}
   $("tecnico").value=datos.tecnico||""; $("cedula").value=datos.cedula||""; $("obsGeneral").value=datos.obsGeneral||"";
   marcarTurno();
@@ -3462,7 +3492,7 @@ async function armarReporte(){
   const completos = PUNTOS.length - incompletos.length;
   const firma = hayFirma ? cv.toDataURL("image/png") : null;
   const huellaFotos = [];
-  for(const p of PUNTOS){ for(const f of datos.puntos[p.id].fotos){ huellaFotos.push((await sha256(f)).slice(0,16)); } }
+  for(const p of PUNTOS){ const d=datos.puntos[p.id]; for(const f of [...d.fotos, ...Object.values(d.extra||{}).flat()]){ huellaFotos.push((await sha256(f)).slice(0,16)); } }
   const base = {
     planta:PLANTA, tecnico:$("tecnico").value.trim(), cedula:$("cedula").value.trim(), turno:datos.turno,
     inicio:ini.toISOString(), fin:fin.toISOString(),
@@ -3600,7 +3630,8 @@ function generarPDF(){
       }
       salto(6.6);
       const v = d.valores[l.key]; let val, col = C.tinta, nota = "";
-      if(vacio(v)){ val = "Sin dato"; col = C.pend; }
+      if(l.it.tipo==="foto"){ const n=(d.extra[l.key]||[]).length; val = n ? `${n} foto${n>1?"s":""} (abajo)` : "Sin foto"; if(!n) col = C.pend; }
+      else if(vacio(v)){ val = "Sin dato"; col = C.pend; }
       else if(l.it.tipo==="num"){ val = `${v} ${l.it.unidad}`; if(fueraDeRango(l.it,v)){ col = C.mal; nota = l.it.msgFuera ? "peligro" : "fuera de rango"; } }
       else if(l.it.tipo==="opc"){ val = v; }
       else { val = v==="si"?"Sí":"No"; if(v==="no") col = C.mal; }
@@ -3622,15 +3653,19 @@ function generarPDF(){
       txt(C.tinta); f("normal",9.5); doc.text(lineas, M+5, y+9.6);
       y += lineas.length*4.6+10;
     }
-    // Fotos: 3 por fila, siempre debajo de su punto y con su número
+    // Fotos: 3 por fila, siempre debajo de su punto y con su título
     y += 3;
-    if(d.fotos.length){
+    const galerias = [{ titulo:`Evidencia fotográfica · punto ${i+1}`, fotos:d.fotos }];
+    ls.forEach(l=>{ if(l.it.tipo==="foto" && (d.extra[l.key]||[]).length) galerias.push({ titulo:`${l.it.nombre} · punto ${i+1}`, fotos:d.extra[l.key] }); });
+    if(!d.fotos.length){ txt(C.pend); f("italic",9); doc.text("Sin foto de evidencia", M, y+3); y += 9; }
+    galerias.forEach(g=>{
+      if(!g.fotos.length) return;
       const col = 3, gap = 4, ancho = (AN-gap*(col-1))/col, alto = ancho*0.75;
       salto(alto+11);
-      txt(C.sub); f("normal",8); doc.text(`Evidencia fotográfica · punto ${i+1}`, M, y+3); y += 5;
-      d.fotos.forEach((foto,k)=>{
+      txt(C.sub); f("normal",8); doc.text(g.titulo, M, y+3); y += 5;
+      g.fotos.forEach((foto,k)=>{
         if(k%col===0 && k>0){ y += alto+gap; }
-        if(k%col===0){ if(y+alto > H-16){ doc.addPage(); cabeceraCorta(); txt(C.sub); f("normal",8); doc.text(`Evidencia fotográfica · punto ${i+1} (continuación)`, M, y+3); y += 5; } }
+        if(k%col===0){ if(y+alto > H-16){ doc.addPage(); cabeceraCorta(); txt(C.sub); f("normal",8); doc.text(`${g.titulo} (continuación)`, M, y+3); y += 5; } }
         const x = M + (k%col)*(ancho+gap);
         fill(C.suave); doc.rect(x,y,ancho,alto,"F");
         try{
@@ -3640,9 +3675,7 @@ function generarPDF(){
         }catch(e){}
       });
       y += alto + 8;
-    } else {
-      txt(C.pend); f("italic",9); doc.text("Sin foto de evidencia", M, y+3); y += 9;
-    }
+    });
   });
 
   if(reporte.base.obs){
